@@ -1,197 +1,96 @@
 """
-Llama 3.1 8B model wrapper for F1 chatbot
+F1 RAG Chatbot Model
+Simple implementation using Llama-3.2-1B for F1 race queries
 """
+
 import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
-from loguru import logger
-from typing import Optional
-import gc
+from transformers import AutoTokenizer, AutoModelForCausalLM
+from typing import List, Optional
+import logging
 
-from .config import MODEL_NAME, MAX_RESPONSE_LENGTH, TEMPERATURE
+logger = logging.getLogger(__name__)
 
-
-class LlamaChatbot:
-    """
-    Wrapper for Llama 3.1 8B-Instruct model
-    """
+class F1ChatbotModel:
+    """Simple F1 chatbot model using Llama-3.2-1B"""
     
-    def __init__(self, device: Optional[str] = None):
-        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    def __init__(self, model_name: str = "meta-llama/Llama-3.2-1B"):
+        self.model_name = model_name
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.tokenizer = None
         self.model = None
-        self.pipeline = None
-        self._load_model()
-    
-    def _load_model(self):
+        
+    def load_model(self):
         """Load the Llama model and tokenizer"""
         try:
-            logger.info(f"Loading Llama model on {self.device}")
+            logger.info(f"Loading model: {self.model_name}")
+            self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
             
-            # Load tokenizer
-            self.tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-            
-            # Set pad token if not exists
+            # Add pad token if not present
             if self.tokenizer.pad_token is None:
                 self.tokenizer.pad_token = self.tokenizer.eos_token
             
-            # Load model with appropriate precision
-            if self.device == "cuda":
-                self.model = AutoModelForCausalLM.from_pretrained(
-                    MODEL_NAME,
-                    torch_dtype=torch.float16,
-                    device_map="auto",
-                    low_cpu_mem_usage=True,
-                    trust_remote_code=True
-                )
-            else:
-                self.model = AutoModelForCausalLM.from_pretrained(
-                    MODEL_NAME,
-                    torch_dtype=torch.float32,
-                    trust_remote_code=True
-                )
-                self.model.to(self.device)
-            
-            # Create pipeline
-            self.pipeline = pipeline(
-                "text-generation",
-                model=self.model,
-                tokenizer=self.tokenizer,
-                device=self.device,
+            self.model = AutoModelForCausalLM.from_pretrained(
+                self.model_name,
                 torch_dtype=torch.float16 if self.device == "cuda" else torch.float32,
+                device_map="auto" if self.device == "cuda" else None,
+                trust_remote_code=True
             )
             
-            logger.info("Llama model loaded successfully")
+            if self.device == "cpu":
+                self.model = self.model.to(self.device)
+                
+            logger.info(f"Model loaded successfully on {self.device}")
             
         except Exception as e:
-            logger.error(f"Error loading Llama model: {e}")
+            logger.error(f"Error loading model: {e}")
             raise
     
-    def generate_response(self, prompt: str, context: str = "") -> str:
-        """
-        Generate response using Llama with F1 context
+    def generate_response(self, context: str, question: str, max_length: int = 512) -> str:
+        """Generate response based on context and question"""
+        if not self.model or not self.tokenizer:
+            self.load_model()
         
-        Args:
-            prompt: User question
-            context: Retrieved F1 context
-            
-        Returns:
-            Generated response
-        """
-        try:
-            # Format the prompt for Llama 3.1 Instruct
-            formatted_prompt = self._format_prompt(prompt, context)
-            
-            # Generate response
-            response = self.pipeline(
-                formatted_prompt,
-                max_length=len(self.tokenizer.encode(formatted_prompt)) + MAX_RESPONSE_LENGTH,
-                temperature=TEMPERATURE,
-                do_sample=True,
-                pad_token_id=self.tokenizer.eos_token_id,
-                truncation=True,
-                return_full_text=False  # Only return the generated part
-            )
-            
-            # Extract generated text
-            if response and len(response) > 0:
-                generated_text = response[0]["generated_text"]
-                return generated_text.strip()
-            else:
-                return "I apologize, but I couldn't generate a response. Please try again."
-            
-        except Exception as e:
-            logger.error(f"Error generating response: {e}")
-            return "I apologize, but I encountered an error while generating a response. Please try again."
-    
-    def _format_prompt(self, question: str, context: str) -> str:
-        """
-        Format prompt for Llama 3.1 Instruct model
-        
-        Args:
-            question: User question
-            context: F1 context information
-            
-        Returns:
-            Formatted prompt
-        """
-        system_message = """You are a knowledgeable Formula 1 expert assistant. Use the provided context to answer questions about F1 races, drivers, teams, and news. Be accurate, informative, and engaging. If the context doesn't contain enough information to answer the question, say so politely."""
-        
-        if context.strip():
-            user_message = f"""Context information:
-{context}
+        # Create a focused prompt for F1 queries
+        prompt = f"""You are an F1 expert assistant. Use the provided context to answer questions about Formula 1 racing.
+
+Context: {context}
 
 Question: {question}
 
-Please provide a helpful and accurate answer based on the context above."""
-        else:
-            user_message = f"""Question: {question}
-
-Please provide a helpful answer about Formula 1."""
+Answer: """
         
-        # Llama 3.1 Instruct format with proper chat template
-        messages = [
-            {"role": "system", "content": system_message},
-            {"role": "user", "content": user_message}
-        ]
-        
-        # Use the tokenizer's chat template if available
-        if hasattr(self.tokenizer, 'apply_chat_template'):
-            try:
-                formatted_prompt = self.tokenizer.apply_chat_template(
-                    messages, 
-                    tokenize=False, 
-                    add_generation_prompt=True
-                )
-                return formatted_prompt
-            except Exception as e:
-                logger.warning(f"Chat template failed, using fallback: {e}")
-        
-        # Fallback format for Llama 3.1
-        formatted_prompt = f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
-
-{system_message}<|eot_id|><|start_header_id|>user<|end_header_id|>
-
-{user_message}<|eot_id|><|start_header_id|>assistant<|end_header_id|>
-
-"""
-        
-        return formatted_prompt
-    
-    def cleanup(self):
-        """Clean up model resources"""
         try:
-            if self.model:
-                del self.model
-            if self.tokenizer:
-                del self.tokenizer
-            if self.pipeline:
-                del self.pipeline
-                
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            # Tokenize input
+            inputs = self.tokenizer(
+                prompt,
+                return_tensors="pt",
+                truncation=True,
+                max_length=1024,
+                padding=True
+            ).to(self.device)
             
-            gc.collect()
-            logger.info("Model cleanup completed")
+            # Generate response
+            with torch.no_grad():
+                outputs = self.model.generate(
+                    **inputs,
+                    max_new_tokens=max_length,
+                    temperature=0.7,
+                    do_sample=True,
+                    pad_token_id=self.tokenizer.eos_token_id,
+                    eos_token_id=self.tokenizer.eos_token_id
+                )
+            
+            # Decode response
+            response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+            
+            # Extract only the answer part
+            if "Answer: " in response:
+                answer = response.split("Answer: ")[-1].strip()
+            else:
+                answer = response.strip()
+                
+            return answer
             
         except Exception as e:
-            logger.error(f"Error during cleanup: {e}")
-
-
-# Global model instance
-_llama_instance = None
-
-
-def get_llama_model() -> LlamaChatbot:
-    """Get or create global Llama model instance"""
-    global _llama_instance
-    
-    if _llama_instance is None:
-        _llama_instance = LlamaChatbot()
-    
-    return _llama_instance
-
-
-# Backward compatibility alias
-def get_mistral_model() -> LlamaChatbot:
-    """Backward compatibility - returns Llama model"""
-    return get_llama_model()
+            logger.error(f"Error generating response: {e}")
+            return "I'm sorry, I encountered an error while processing your question."
