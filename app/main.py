@@ -1,123 +1,100 @@
 """
-Main F1 RAG Chatbot application
+F1 RAG Chatbot Main Application
+Simple RAG chatbot for F1 queries using Llama-3.2-1B and retrieval
 """
+
+import logging
+import os
 from typing import Optional
-from loguru import logger
+from .model import F1ChatbotModel
+from .retriever import F1DataRetriever
 
-from .model import get_mistral_model
-from .retriever import get_retriever
-from .config import APP_TITLE
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-
-class F1Chatbot:
-    """
-    Main F1 RAG Chatbot class
-    """
+class F1RagChatbot:
+    """Main F1 RAG Chatbot class"""
     
-    def __init__(self):
-        self.model = None
-        self.retriever = None
-        self._initialize()
-    
-    def _initialize(self):
-        """Initialize model and retriever"""
-        try:
-            logger.info("Initializing F1 Chatbot...")
-            
-            # Initialize retriever first (faster)
-            self.retriever = get_retriever()
-            
-            # Initialize model (slower)
-            self.model = get_mistral_model()
-            
-            logger.info("F1 Chatbot initialized successfully")
-            
-        except Exception as e:
-            logger.error(f"Error initializing chatbot: {e}")
-            raise
-    
-    def answer_question(self, question: str) -> str:
-        """
-        Answer a question about F1 using RAG
+    def __init__(self, data_path: str = "data"):
+        self.data_path = data_path
+        self.model = F1ChatbotModel()
+        self.retriever = F1DataRetriever(data_path=data_path)
+        self._initialized = False
         
-        Args:
-            question: User question
+    def initialize(self):
+        """Initialize the chatbot components"""
+        if self._initialized:
+            return
             
-        Returns:
-            Generated answer
-        """
+        logger.info("Initializing F1 RAG Chatbot...")
+        
+        # Initialize retriever (this will load data and create embeddings)
+        self.retriever.create_embeddings()
+        
+        # Load model
+        self.model.load_model()
+        
+        self._initialized = True
+        logger.info("F1 RAG Chatbot initialized successfully!")
+    
+    def chat(self, question: str) -> str:
+        """Main chat function"""
+        if not self._initialized:
+            self.initialize()
+        
         try:
-            logger.info(f"Processing question: {question[:100]}...")
-            
-            # Step 1: Retrieve relevant context
+            # Get relevant context from retriever
+            logger.info(f"Processing question: {question[:50]}...")
             context = self.retriever.get_context(question)
             
-            # Step 2: Generate response with context
-            answer = self.model.generate_response(question, context)
+            # Generate response using the model
+            response = self.model.generate_response(
+                context=context,
+                question=question,
+                max_length=300
+            )
             
-            logger.info("Question answered successfully")
-            return answer
+            return response
             
         except Exception as e:
-            logger.error(f"Error answering question: {e}")
-            return "I apologize, but I encountered an error while processing your question. Please try again."
+            logger.error(f"Error in chat: {e}")
+            return "I'm sorry, I encountered an error while processing your question. Please try again."
     
     def get_system_info(self) -> dict:
         """Get system information"""
-        try:
-            retriever_info = self.retriever.get_collection_info()
-            return {
-                "title": APP_TITLE,
-                "model": "Llama 3.1 8B-Instruct",
-                "retriever": retriever_info,
-                "status": "ready"
-            }
-        except Exception as e:
-            logger.error(f"Error getting system info: {e}")
-            return {"status": "error"}
+        return {
+            "model_device": self.model.device,
+            "documents_loaded": len(self.retriever.documents) if self.retriever.documents else 0,
+            "initialized": self._initialized
+        }
+
+def create_chatbot(data_path: str = "data") -> F1RagChatbot:
+    """Factory function to create chatbot instance"""
+    return F1RagChatbot(data_path=data_path)
+
+# Quick test function
+def quick_test():
+    """Quick test of the chatbot"""
+    chatbot = create_chatbot()
     
-    def update_knowledge_base(self, documents: list):
-        """Update the knowledge base with new documents"""
-        try:
-            self.retriever.add_documents(documents)
-            logger.info(f"Knowledge base updated with {len(documents)} documents")
-            return True
-        except Exception as e:
-            logger.error(f"Error updating knowledge base: {e}")
-            return False
-
-
-# Global chatbot instance
-_chatbot_instance = None
-
-
-def get_chatbot() -> F1Chatbot:
-    """Get or create global chatbot instance"""
-    global _chatbot_instance
-    
-    if _chatbot_instance is None:
-        _chatbot_instance = F1Chatbot()
-    
-    return _chatbot_instance
-
-
-def main():
-    """Main function for testing"""
-    chatbot = get_chatbot()
-    
-    # Test questions
     test_questions = [
-        "Who won the last race?",
-        "What's the current championship standings?",
-        "Tell me about Mercedes F1 team",
-        "What happened in the Monaco Grand Prix?"
+        "Who got pole position in Hungary?",
+        "Tell me about Leclerc's performance",
+        "What happened in the latest F1 race?"
     ]
     
+    print("=== F1 RAG Chatbot Quick Test ===")
+    print(f"System Info: {chatbot.get_system_info()}")
+    
     for question in test_questions:
-        print(f"\nQ: {question}")
-        answer = chatbot.answer_question(question)
-        print(f"A: {answer}")
-
+        print(f"\nQuestion: {question}")
+        try:
+            answer = chatbot.chat(question)
+            print(f"Answer: {answer}")
+        except Exception as e:
+            print(f"Error: {e}")
+        print("-" * 50)
 
 if __name__ == "__main__":
-    main()
+    quick_test()
