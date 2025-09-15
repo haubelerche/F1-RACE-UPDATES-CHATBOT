@@ -8,8 +8,7 @@ import sys
 import os
 from pathlib import Path
 
-# Add the parent directory to the path so we can import from app
-parent_dir = Path(__file__).parent.parent
+parent_dir = Path(__file__).resolve().parent.parent
 sys.path.append(str(parent_dir))
 
 from app.main import create_chatbot
@@ -90,6 +89,11 @@ def main():
     except Exception as e:
         st.error(f"Failed to initialize chatbot: {str(e)}")
         st.info("Make sure you have run the data preparation pipeline first!")
+# ui/streamlit_app.py
+@st.cache_resource
+def get_chatbot():
+    project_root = Path(__file__).resolve().parent.parent
+    return create_chatbot(data_path=str(project_root))
 
 if __name__ == "__main__":
     main()
